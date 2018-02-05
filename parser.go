@@ -2,23 +2,10 @@ package jsonparser
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-)
-
-// Errors
-var (
-	KeyPathNotFoundError       = errors.New("Key path not found")
-	UnknownValueTypeError      = errors.New("Unknown value type")
-	MalformedJsonError         = errors.New("Malformed JSON error")
-	MalformedStringError       = errors.New("Value is string, but can't find closing '\"' symbol")
-	MalformedArrayError        = errors.New("Value is array, but can't find closing ']' symbol")
-	MalformedObjectError       = errors.New("Value looks like object, but can't find closing '}' symbol")
-	MalformedValueError        = errors.New("Value looks like Number/Boolean/None, but can't find its end: ',' or '}' symbol")
-	MalformedStringEscapeError = errors.New("Encountered an invalid escape sequence in a string")
 )
 
 // How much stack space to allocate for unescaping JSON strings; if a string longer
@@ -105,7 +92,7 @@ func findKeyStart(data []byte, key string) (int, error) {
 		i++
 	}
 
-	return -1, KeyPathNotFoundError
+	return -1, KeyPathNotFoundError(0)
 }
 
 func tokenStart(data []byte) int {
@@ -284,13 +271,13 @@ func searchKeys(data []byte, keys ...string) int {
 				var valueFound []byte
 				var valueOffset int
 				var curI = i
-				ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err error) {
+ 				ArrayEach(data[i:], func(value []byte, dataType ValueType, startOffset int, endOffset int, err error) {
 					if curIdx == aIdx {
 						valueFound = value
-						valueOffset = offset
+						valueOffset = startOffset
 						if dataType == String {
-							valueOffset = valueOffset - 2
-							valueFound = data[curI+valueOffset : curI+valueOffset+len(value)+2]
+							valueOffset = valueOffset
+							valueFound = data[curI+valueOffset : curI+valueOffset+len(value)]
 						}
 					}
 					curIdx += 1
@@ -398,7 +385,7 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 
 				if maxPath >= level {
 					if level < 1 {
-						cb(-1, nil, Unknown, MalformedJsonError)
+						cb(-1, nil, Unknown, MalformedJsonError(valueOffset))
 						return -1
 					}
 
@@ -414,8 +401,8 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 						pathsMatched++
 						pathFlags |= bitwiseFlags[pi+1]
 
-						v, dt, of, e := Get(data[i:])
-						cb(pi, v, dt, e)
+						v, dt, _, of, e := Get(data[i:])
+						cb(pi, v, dt, addToErrorOffset(e, i))
 
 						if of != -1 {
 							i += of
@@ -456,7 +443,7 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 			var pIdxFlags int64
 
 			if level < 0 {
-				cb(-1, nil, Unknown, MalformedJsonError)
+				cb(-1, nil, Unknown, MalformedJsonError(0))
 				return -1
 			}
 
@@ -474,7 +461,7 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 				level++
 
 				var curIdx int
-				arrOff, _ := ArrayEach(data[i:], func(value []byte, dataType ValueType, offset int, err error) {
+				arrOff, _ := ArrayEach(data[i:], func(value []byte, dataType ValueType, startOffset int, endOffset int, err error) {
 					if arrIdxFlags&bitwiseFlags[curIdx+1] != 0 {
 						for pi, p := range paths {
 							if pIdxFlags&bitwiseFlags[pi+1] != 0 {
@@ -487,8 +474,8 @@ func EachKey(data []byte, cb func(int, []byte, ValueType, error), paths ...[]str
 									pathFlags |= bitwiseFlags[pi+1]
 
 									if of != -1 {
-										v, dt, _, e := Get(value[of:])
-										cb(pi, v, dt, e)
+										v, dt, _,  _, e := Get(value[of:])
+										cb(pi, v, dt, addToErrorOffset(e, of))
 									}
 								}
 							}
@@ -611,14 +598,14 @@ func Delete(data []byte, keys ...string) []byte {
 	if !array {
 		if len(keys) > 1 {
 			_, _, startOffset, endOffset, err = internalGet(data, keys[:lk-1]...)
-			if err == KeyPathNotFoundError {
+			if isKeyPathNotFoundError(err) {
 				// problem parsing the data
 				return data
 			}
 		}
 
 		keyOffset, err = findKeyStart(data[startOffset:endOffset], keys[lk-1])
-		if err == KeyPathNotFoundError {
+		if isKeyPathNotFoundError(err) {
 			// problem parsing the data
 			return data
 		}
@@ -635,7 +622,7 @@ func Delete(data []byte, keys ...string) []byte {
 		}
 	} else {
 		_, _, keyOffset, endOffset, err = internalGet(data, keys...)
-		if err == KeyPathNotFoundError {
+		if isKeyPathNotFoundError(err) {
 			// problem parsing the data
 			return data
 		}
@@ -666,12 +653,12 @@ Returns:
 func Set(data []byte, setValue []byte, keys ...string) (value []byte, err error) {
 	// ensure keys are set
 	if len(keys) == 0 {
-		return nil, KeyPathNotFoundError
+		return nil, KeyPathNotFoundError(0)
 	}
 
 	_, _, startOffset, endOffset, err := internalGet(data, keys...)
 	if err != nil {
-		if err != KeyPathNotFoundError {
+		if !isKeyPathNotFoundError(err) {
 			// problem parsing the data
 			return nil, err
 		}
@@ -694,7 +681,7 @@ func Set(data []byte, setValue []byte, keys ...string) (value []byte, err error)
 			firstToken := nextToken(data)
 			// We can't set a top-level key if data isn't an object
 			if len(data) == 0 || data[firstToken] != '{' {
-				return nil, KeyPathNotFoundError
+				return nil, KeyPathNotFoundError(firstToken)
 			}
 			// Don't need a comma if the input is an empty object
 			secondToken := firstToken + 1 + nextToken(data[firstToken+1:])
@@ -744,7 +731,7 @@ func getType(data []byte, offset int) ([]byte, ValueType, int, error) {
 		if idx, _ := stringEnd(data[offset+1:]); idx != -1 {
 			endOffset += idx + 1
 		} else {
-			return nil, dataType, offset, MalformedStringError
+			return nil, dataType, offset, MalformedStringError(offset)
 		}
 	} else if data[offset] == '[' { // if array value
 		dataType = Array
@@ -752,7 +739,7 @@ func getType(data []byte, offset int) ([]byte, ValueType, int, error) {
 		endOffset = blockEnd(data[offset:], '[', ']')
 
 		if endOffset == -1 {
-			return nil, dataType, offset, MalformedArrayError
+			return nil, dataType, offset, MalformedArrayError(offset)
 		}
 
 		endOffset += offset
@@ -762,7 +749,7 @@ func getType(data []byte, offset int) ([]byte, ValueType, int, error) {
 		endOffset = blockEnd(data[offset:], '{', '}')
 
 		if endOffset == -1 {
-			return nil, dataType, offset, MalformedObjectError
+			return nil, dataType, offset, MalformedObjectError(offset)
 		}
 
 		endOffset += offset
@@ -771,7 +758,7 @@ func getType(data []byte, offset int) ([]byte, ValueType, int, error) {
 		end := tokenEnd(data[endOffset:])
 
 		if end == -1 {
-			return nil, dataType, offset, MalformedValueError
+			return nil, dataType, offset, MalformedValueError(offset)
 		}
 
 		value := data[offset : endOffset+end]
@@ -781,18 +768,18 @@ func getType(data []byte, offset int) ([]byte, ValueType, int, error) {
 			if bytes.Equal(value, trueLiteral) || bytes.Equal(value, falseLiteral) {
 				dataType = Boolean
 			} else {
-				return nil, Unknown, offset, UnknownValueTypeError
+				return nil, Unknown, offset, UnknownValueTypeError(offset)
 			}
 		case 'u', 'n': // undefined or null
 			if bytes.Equal(value, nullLiteral) {
 				dataType = Null
 			} else {
-				return nil, Unknown, offset, UnknownValueTypeError
+				return nil, Unknown, offset, UnknownValueTypeError(offset)
 			}
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-':
 			dataType = Number
 		default:
-			return nil, Unknown, offset, UnknownValueTypeError
+			return nil, Unknown, offset, UnknownValueTypeError(offset)
 		}
 
 		endOffset += end
@@ -812,22 +799,22 @@ Returns:
 Accept multiple keys to specify path to JSON value (in case of quering nested structures).
 If no keys provided it will try to extract closest JSON value (simple ones or object/array), useful for reading streams or arrays, see `ArrayEach` implementation.
 */
-func Get(data []byte, keys ...string) (value []byte, dataType ValueType, offset int, err error) {
-	a, b, _, d, e := internalGet(data, keys...)
-	return a, b, d, e
+func Get(data []byte, keys ...string) (value []byte, dataType ValueType, offsetStart int, offsetEnd int, err error) {
+	a, b, c, d, e := internalGet(data, keys...)
+	return a, b, c, d, e
 }
 
 func internalGet(data []byte, keys ...string) (value []byte, dataType ValueType, offset, endOffset int, err error) {
 	if len(keys) > 0 {
 		if offset = searchKeys(data, keys...); offset == -1 {
-			return nil, NotExist, -1, -1, KeyPathNotFoundError
+			return nil, NotExist, -1, -1, KeyPathNotFoundError(0)
 		}
 	}
 
 	// Go to closest value
 	nO := nextToken(data[offset:])
 	if nO == -1 {
-		return nil, NotExist, offset, -1, MalformedJsonError
+		return nil, NotExist, offset, -1, MalformedJsonError(offset)
 	}
 
 	offset += nO
@@ -844,29 +831,30 @@ func internalGet(data []byte, keys ...string) (value []byte, dataType ValueType,
 	return value, dataType, offset, endOffset, nil
 }
 
+//func ArrayEachNoOffset(data []byte, cb func(value []byte, dataType ValueType, startOffset int, endOffset int), keys ...string) (offset int, err error) {
 // ArrayEach is used when iterating arrays, accepts a callback function with the same return arguments as `Get`.
-func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int, err error), keys ...string) (offset int, err error) {
+func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, startOffset int, endOffset int, err error), keys ...string) (offset int, err error) {
 	if len(data) == 0 {
-		return -1, MalformedObjectError
+		return -1, MalformedObjectError(0)
 	}
 
 	offset = 1
 
 	if len(keys) > 0 {
 		if offset = searchKeys(data, keys...); offset == -1 {
-			return offset, KeyPathNotFoundError
+			return offset, KeyPathNotFoundError(0)
 		}
 
 		// Go to closest value
 		nO := nextToken(data[offset:])
 		if nO == -1 {
-			return offset, MalformedJsonError
+			return offset, MalformedJsonError(offset)
 		}
 
 		offset += nO
 
 		if data[offset] != '[' {
-			return offset, MalformedArrayError
+			return offset, MalformedArrayError(offset)
 		}
 
 		offset++
@@ -874,7 +862,7 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 
 	nO := nextToken(data[offset:])
 	if nO == -1 {
-		return offset, MalformedJsonError
+		return offset, MalformedJsonError(offset)
 	}
 
 	offset += nO
@@ -884,10 +872,10 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 	}
 
 	for true {
-		v, t, o, e := Get(data[offset:])
+		v, t, os, o, e := Get(data[offset:])
 
 		if e != nil {
-			return offset, e
+			return offset, addToErrorOffset(e, offset)
 		}
 
 		if o == 0 {
@@ -895,7 +883,7 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 		}
 
 		if t != NotExist {
-			cb(v, t, offset+o-len(v), e)
+			cb(v, t, offset+os, offset+o, e)
 		}
 
 		if e != nil {
@@ -906,7 +894,7 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 
 		skipToToken := nextToken(data[offset:])
 		if skipToToken == -1 {
-			return offset, MalformedArrayError
+			return offset, MalformedArrayError(offset)
 		}
 		offset += skipToToken
 
@@ -915,7 +903,7 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 		}
 
 		if data[offset] != ',' {
-			return offset, MalformedArrayError
+			return offset, MalformedArrayError(offset)
 		}
 
 		offset++
@@ -925,14 +913,14 @@ func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, offset int
 }
 
 // ObjectEach iterates over the key-value pairs of a JSON object, invoking a given callback for each such entry
-func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType ValueType, offset int) error, keys ...string) (err error) {
+func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType ValueType, startOffset int, endOffset int, valueStartOffset int) error, keys... string) (err error) {
 	var stackbuf [unescapeStackBufSize]byte // stack-allocated array for allocation-free unescaping of small strings
 	offset := 0
 
 	// Descend to the desired key, if requested
 	if len(keys) > 0 {
 		if off := searchKeys(data, keys...); off == -1 {
-			return KeyPathNotFoundError
+			return KeyPathNotFoundError(offset)
 		} else {
 			offset = off
 		}
@@ -940,16 +928,16 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 
 	// Validate and skip past opening brace
 	if off := nextToken(data[offset:]); off == -1 {
-		return MalformedObjectError
+		return MalformedObjectError(offset)
 	} else if offset += off; data[offset] != '{' {
-		return MalformedObjectError
+		return MalformedObjectError(offset)
 	} else {
 		offset++
 	}
 
 	// Skip to the first token inside the object, or stop if we find the ending brace
 	if off := nextToken(data[offset:]); off == -1 {
-		return MalformedJsonError
+		return MalformedJsonError(offset)
 	} else if offset += off; data[offset] == '}' {
 		return nil
 	}
@@ -958,7 +946,7 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 	for offset < len(data) {
 		// Step 1: find the next key
 		var key []byte
-
+		var objectStartOffset = offset
 		// Check what the the next token is: start of string, end of object, or something else (error)
 		switch data[offset] {
 		case '"':
@@ -966,13 +954,13 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 		case '}':
 			return nil // we found the end of the object; stop and return success
 		default:
-			return MalformedObjectError
+			return MalformedObjectError(offset)
 		}
 
 		// Find the end of the key string
 		var keyEscaped bool
 		if off, esc := stringEnd(data[offset:]); off == -1 {
-			return MalformedJsonError
+			return MalformedJsonError(offset)
 		} else {
 			key, keyEscaped = data[offset:offset+off-1], esc
 			offset += off
@@ -981,7 +969,7 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 		// Unescape the string if needed
 		if keyEscaped {
 			if keyUnescaped, err := Unescape(key, stackbuf[:]); err != nil {
-				return MalformedStringEscapeError
+				return MalformedStringEscapeError(offset)
 			} else {
 				key = keyUnescaped
 			}
@@ -989,25 +977,25 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 
 		// Step 2: skip the colon
 		if off := nextToken(data[offset:]); off == -1 {
-			return MalformedJsonError
+			return MalformedJsonError(offset)
 		} else if offset += off; data[offset] != ':' {
-			return MalformedJsonError
+			return MalformedJsonError(offset)
 		} else {
 			offset++
 		}
 
 		// Step 3: find the associated value, then invoke the callback
-		if value, valueType, off, err := Get(data[offset:]); err != nil {
-			return err
-		} else if err := callback(key, value, valueType, offset+off); err != nil { // Invoke the callback here!
-			return err
+		if value, valueType, valueStartOffset, off, err := Get(data[offset:]); err != nil {
+			return addToErrorOffset(err, offset)
+		} else if err := callback(key, value, valueType, objectStartOffset, offset+off, offset+valueStartOffset); err != nil { // Invoke the callback here!
+			return addToErrorOffset(err, offset)
 		} else {
 			offset += off
 		}
 
 		// Step 4: skip over the next comma to the following token, or stop if we hit the ending brace
 		if off := nextToken(data[offset:]); off == -1 {
-			return MalformedArrayError
+			return MalformedArrayError(offset)
 		} else {
 			offset += off
 			switch data[offset] {
@@ -1016,24 +1004,24 @@ func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType Va
 			case ',':
 				offset++ // Ignore the comma
 			default:
-				return MalformedObjectError
+				return MalformedObjectError(offset)
 			}
 		}
 
 		// Skip to the next token after the comma
 		if off := nextToken(data[offset:]); off == -1 {
-			return MalformedArrayError
+			return MalformedArrayError(offset)
 		} else {
 			offset += off
 		}
 	}
 
-	return MalformedObjectError // we shouldn't get here; it's expected that we will return via finding the ending brace
+	return MalformedObjectError(offset) // we shouldn't get here; it's expected that we will return via finding the ending brace
 }
 
 // GetUnsafeString returns the value retrieved by `Get`, use creates string without memory allocation by mapping string to slice memory. It does not handle escape symbols.
 func GetUnsafeString(data []byte, keys ...string) (val string, err error) {
-	v, _, _, e := Get(data, keys...)
+	v, _, _, _, e := Get(data, keys...)
 
 	if e != nil {
 		return "", e
@@ -1045,7 +1033,7 @@ func GetUnsafeString(data []byte, keys ...string) (val string, err error) {
 // GetString returns the value retrieved by `Get`, cast to a string if possible, trying to properly handle escape and utf8 symbols
 // If key data type do not match, it will return an error.
 func GetString(data []byte, keys ...string) (val string, err error) {
-	v, t, _, e := Get(data, keys...)
+	v, t, _, _, e := Get(data, keys...)
 
 	if e != nil {
 		return "", e
@@ -1067,7 +1055,7 @@ func GetString(data []byte, keys ...string) (val string, err error) {
 // The offset is the same as in `Get`.
 // If key data type do not match, it will return an error.
 func GetFloat(data []byte, keys ...string) (val float64, err error) {
-	v, t, _, e := Get(data, keys...)
+	v, t, _, _, e := Get(data, keys...)
 
 	if e != nil {
 		return 0, e
@@ -1083,7 +1071,7 @@ func GetFloat(data []byte, keys ...string) (val float64, err error) {
 // GetInt returns the value retrieved by `Get`, cast to a int64 if possible.
 // If key data type do not match, it will return an error.
 func GetInt(data []byte, keys ...string) (val int64, err error) {
-	v, t, _, e := Get(data, keys...)
+	v, t, _, _, e := Get(data, keys...)
 
 	if e != nil {
 		return 0, e
@@ -1100,7 +1088,7 @@ func GetInt(data []byte, keys ...string) (val int64, err error) {
 // The offset is the same as in `Get`.
 // If key data type do not match, it will return error.
 func GetBoolean(data []byte, keys ...string) (val bool, err error) {
-	v, t, _, e := Get(data, keys...)
+	v, t, _, _, e := Get(data, keys...)
 
 	if e != nil {
 		return false, e
@@ -1121,7 +1109,7 @@ func ParseBoolean(b []byte) (bool, error) {
 	case bytes.Equal(b, falseLiteral):
 		return false, nil
 	default:
-		return false, MalformedValueError
+		return false, MalformedValueError(0)
 	}
 }
 
@@ -1129,7 +1117,7 @@ func ParseBoolean(b []byte) (bool, error) {
 func ParseString(b []byte) (string, error) {
 	var stackbuf [unescapeStackBufSize]byte // stack-allocated array for allocation-free unescaping of small strings
 	if bU, err := Unescape(b, stackbuf[:]); err != nil {
-		return "", MalformedValueError
+		return "", MalformedValueError(0)
 	} else {
 		return string(bU), nil
 	}
@@ -1138,7 +1126,7 @@ func ParseString(b []byte) (string, error) {
 // ParseNumber parses a Number ValueType into a Go float64
 func ParseFloat(b []byte) (float64, error) {
 	if v, err := parseFloat(&b); err != nil {
-		return 0, MalformedValueError
+		return 0, MalformedValueError(0)
 	} else {
 		return v, nil
 	}
@@ -1147,7 +1135,7 @@ func ParseFloat(b []byte) (float64, error) {
 // ParseInt parses a Number ValueType into a Go int64
 func ParseInt(b []byte) (int64, error) {
 	if v, ok := parseInt(b); !ok {
-		return 0, MalformedValueError
+		return 0, MalformedValueError(0)
 	} else {
 		return v, nil
 	}

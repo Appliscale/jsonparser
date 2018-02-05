@@ -149,7 +149,7 @@ func Unescape(in, out []byte) ([]byte, error) {
 		// Unescape the next escaped character
 		inLen, bufLen := unescapeToUTF8(in, buf)
 		if inLen == -1 {
-			return nil, MalformedStringEscapeError
+			return nil, MalformedStringEscapeError(firstBackslash)
 		}
 
 		in = in[inLen:]

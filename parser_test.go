@@ -12,7 +12,7 @@ import (
 var activeTest = ""
 
 func toArray(data []byte) (result [][]byte) {
-	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(data, func(value []byte, dataType ValueType, startOffset int, endOffset int, err error) {
 		result = append(result, value)
 	})
 
@@ -20,7 +20,7 @@ func toArray(data []byte) (result [][]byte) {
 }
 
 func toStringArray(data []byte) (result []string) {
-	ArrayEach(data, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(data, func(value []byte, dataType ValueType, startOffset int, endOffset int, err error) {
 		result = append(result, string(value))
 	})
 
@@ -897,8 +897,8 @@ var getArrayTests = []GetTest{
 // checkFoundAndNoError checks the dataType and error return from Get*() against the test case expectations.
 // Returns true the test should proceed to checking the actual data returned from Get*(), or false if the test is finished.
 func getTestCheckFoundAndNoError(t *testing.T, testKind string, test GetTest, jtype ValueType, value interface{}, err error) bool {
-	isFound := (err != KeyPathNotFoundError)
-	isErr := (err != nil && err != KeyPathNotFoundError)
+	isFound := !isKeyPathNotFoundError(err)
+	isErr := err != nil && !isKeyPathNotFoundError(err)
 
 	if test.isErr != isErr {
 		// If the call didn't match the error expectation, fail
@@ -950,8 +950,8 @@ func runGetTests(t *testing.T, testKind string, tests []GetTest, runner func(Get
 }
 
 func setTestCheckFoundAndNoError(t *testing.T, testKind string, test SetTest, value interface{}, err error) bool {
-	isFound := (err != KeyPathNotFoundError)
-	isErr := (err != nil && err != KeyPathNotFoundError)
+	isFound := !isKeyPathNotFoundError(err)
+	isErr := err != nil && !isKeyPathNotFoundError(err)
 
 	if test.isErr != isErr {
 		// If the call didn't match the error expectation, fail
@@ -1054,7 +1054,7 @@ func TestDelete(t *testing.T) {
 func TestGet(t *testing.T) {
 	runGetTests(t, "Get()", getTests,
 		func(test GetTest) (value interface{}, dataType ValueType, err error) {
-			value, dataType, _, err = Get([]byte(test.json), test.path...)
+			value, dataType, _, _, err = Get([]byte(test.json), test.path...)
 			return
 		},
 		func(test GetTest, value interface{}) (bool, interface{}) {
@@ -1119,7 +1119,7 @@ func TestGetBoolean(t *testing.T) {
 func TestGetSlice(t *testing.T) {
 	runGetTests(t, "Get()-for-arrays", getArrayTests,
 		func(test GetTest) (value interface{}, dataType ValueType, err error) {
-			value, dataType, _, err = Get([]byte(test.json), test.path...)
+			value, dataType, _, _, err = Get([]byte(test.json), test.path...)
 			return
 		},
 		func(test GetTest, value interface{}) (bool, interface{}) {
@@ -1133,7 +1133,7 @@ func TestArrayEach(t *testing.T) {
 	mock := []byte(`{"a": { "b":[{"x": 1} ,{"x":2},{ "x":3}, {"x":4} ]}}`)
 	count := 0
 
-	ArrayEach(mock, func(value []byte, dataType ValueType, offset int, err error) {
+	ArrayEach(mock, func(value []byte, dataType ValueType, offsetStart int, offsetEnd int, err error) {
 		count++
 
 		switch count {
@@ -1160,11 +1160,11 @@ func TestArrayEach(t *testing.T) {
 }
 
 func TestArrayEachEmpty(t *testing.T) {
-	funcError := func([]byte, ValueType, int, error) { t.Errorf("Run func not allow") }
+	funcError := func([]byte, ValueType, int, int, error) { t.Errorf("Run func not allow") }
 
 	type args struct {
 		data []byte
-		cb   func(value []byte, dataType ValueType, offset int, err error)
+		cb   func(value []byte, dataType ValueType, offsetStart int, offsetEnd int, err error)
 		keys []string
 	}
 	tests := []struct {
@@ -1317,7 +1317,7 @@ func TestObjectEach(t *testing.T) {
 
 		// Execute ObjectEach and capture all of the entries visited, in order
 		var entries []keyValueEntry
-		err := ObjectEach([]byte(test.json), func(key, value []byte, valueType ValueType, off int) error {
+		err := ObjectEach([]byte(test.json), func(key, value []byte, valueType ValueType, offStart int, offEnd int, valueStartOffset int) error {
 			entries = append(entries, keyValueEntry{
 				key:       string(key),
 				value:     string(value),
