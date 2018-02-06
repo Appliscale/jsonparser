@@ -831,7 +831,6 @@ func internalGet(data []byte, keys ...string) (value []byte, dataType ValueType,
 	return value, dataType, offset, endOffset, nil
 }
 
-//func ArrayEachNoOffset(data []byte, cb func(value []byte, dataType ValueType, startOffset int, endOffset int), keys ...string) (offset int, err error) {
 // ArrayEach is used when iterating arrays, accepts a callback function with the same return arguments as `Get`.
 func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, startOffset int, endOffset int, err error), keys ...string) (offset int, err error) {
 	if len(data) == 0 {

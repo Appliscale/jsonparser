@@ -103,14 +103,15 @@ You also can view API at [godoc.org](https://godoc.org/github.com/buger/jsonpars
 
 ### **`Get`**
 ```go
-func Get(data []byte, keys ...string) (value []byte, dataType jsonparser.ValueType, offset int, err error)
+func Get(data []byte, keys ...string) (value []byte, dataType ValueType, offsetStart int, offsetEnd int, err error)
 ```
 Receives data structure, and key path to extract value from.
 
 Returns:
 * `value` - Pointer to original data structure containing key value, or just empty slice if nothing found or error
 * `dataType` - 	Can be: `NotExist`, `String`, `Number`, `Object`, `Array`, `Boolean` or `Null`
-* `offset` - Offset from provided data structure where key value ends. Used mostly internally, for example for `ArrayEach` helper.
+* `offsetStart` - Offset from provided data structure where key value starts. Used mostly internally, for example for `ArrayEach` helper.
+* `offsetEnd` - Offset from provided data structure where key value ends. Used mostly internally, for example for `ArrayEach` helper.
 * `err` - If the key is not found or any other parsing issue, it should return error. If key not found it also sets `dataType` to `NotExist`
 
 Accepts multiple keys to specify path to JSON value (in case of quering nested structures).
@@ -152,18 +153,27 @@ If key data type do not match, it will return error.
 
 ### **`ArrayEach`**
 ```go
-func ArrayEach(data []byte, cb func(value []byte, dataType jsonparser.ValueType, offset int, err error), keys ...string)
+func ArrayEach(data []byte, cb func(value []byte, dataType ValueType, startOffset int, endOffset int, err error), keys ...string) (offset int, err error)
 ```
 Needed for iterating arrays, accepts a callback function with the same return arguments as `Get`.
 
 ### **`ObjectEach`**
 ```go
-func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType ValueType, offset int) error, keys ...string) (err error)
+func ObjectEach(data []byte, callback func(key []byte, value []byte, dataType ValueType, startOffset int, endOffset int, valueStartOffset int) error, keys... string) (err error)
+
 ```
-Needed for iterating object, accepts a callback function. Example:
+Needed for iterating object, accepts a callback function. Callback function arguments:
+* `key` - Currently processed key
+* `value` - Pointer to original data structure containing key value, or just empty slice if nothing found or error
+* `dataType` - 	Can be: `NotExist`, `String`, `Number`, `Object`, `Array`, `Boolean` or `Null`
+* `startOffset` - Offset from provided data structure where key starts
+* `endOffset` - Offset from provided data structure where key value ends
+* `valueStartOffset` - Offset from provided data structure where key value starts
+* `err` - If the key is not found or any other parsing issue, it should return error. If key not found it also sets `dataType` to `NotExist`
+Example:
 ```go
 var handler func([]byte, []byte, jsonparser.ValueType, int) error
-handler = func(key []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
+handler = func(key []byte, value []byte, dataType jsonparser.ValueType, startOffset int, endOffset int, valueStartOffset int) error {
 	//do stuff here
 }
 jsonparser.ObjectEach(myJson, handler)
